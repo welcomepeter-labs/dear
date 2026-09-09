@@ -201,6 +201,17 @@ textarea{resize:vertical;min-height:74px}
   opacity:0;pointer-events:none;transition:opacity .3s,transform .3s}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 
+
+.mute{position:fixed;top:calc(14px + env(safe-area-inset-top));right:14px;z-index:90;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line);background:rgba(255,251,244,.9);
+  backdrop-filter:blur(6px);cursor:pointer;color:var(--ink-soft);display:none;
+  align-items:center;justify-content:center;padding:0}
+.mute.on{display:flex}
+.mute svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.mute .slash{opacity:0}
+.mute.off{color:#B6BCC9}
+.mute.off .slash{opacity:1}
+
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
   html{scroll-behavior:auto}
@@ -375,6 +386,9 @@ textarea{resize:vertical;min-height:74px}
   </footer>
 </main>
 
+<button class="mute" id="mute" aria-label="음악 끄기">
+  <svg viewBox="0 0 24 24"><path d="M9 17V6l10-2v11"/><circle cx="6.5" cy="17" r="2.6"/><circle cx="16.5" cy="15" r="2.6"/><path class="slash" d="M3 3l18 18"/></svg>
+</button>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -413,6 +427,7 @@ function openGate() {
   if (opened) return;
   opened = true;
   gate.classList.add('opened');
+  startMusic();
   if (!reduce) setTimeout(burst, 700);
   setTimeout(() => {
     gate.classList.add('gone');
@@ -492,6 +507,102 @@ document.getElementById('shareBtn').addEventListener('click', async () => {
   const data = { title: '천성제 ♥ 김은정 결혼합니다', text: '2026년 11월 14일 토요일 낮 12시 · 제주 DIMIN', url: location.href };
   if (navigator.share) { try { await navigator.share(data); } catch {} }
   else { try { await navigator.clipboard.writeText(location.href); say('링크를 복사했습니다'); } catch { say('주소창의 링크를 복사해 주세요'); } }
+});
+/* ─────────── 오르골 · 직접 연주 ─────────── */
+let ctx, master, wet, dry, timer, bar = 0, nextT = 0, playing = false;
+const BPM = 68, BEAT = 60 / BPM, BAR = BEAT * 4;
+const SEMI = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+function hz(n) {
+  const m = n.match(/^([A-G])(b|#)?(\d)$/);
+  const s = SEMI[m[1]] + (m[2] === 'b' ? -1 : m[2] === '#' ? 1 : 0) + (+m[3] + 1) * 12;
+  return 440 * Math.pow(2, (s - 69) / 12);
+}
+const PROG = [
+  { bass:'F2',  ch:['F3','A3','C4','E4'],  mel:[[0,'C5'],[2.5,'A4']] },
+  { bass:'A2',  ch:['A3','C4','E4','G4'],  mel:[[1,'G4'],[3,'A4']] },
+  { bass:'D2',  ch:['D3','F3','A3','C4'],  mel:[[0,'D5'],[2,'C5']] },
+  { bass:'Bb2', ch:['Bb3','D4','F4','A4'], mel:[[1,'A4'],[3,'F4']] },
+  { bass:'G2',  ch:['G3','Bb3','D4','F4'], mel:[[0,'Bb4'],[2.5,'D5']] },
+  { bass:'C3',  ch:['C4','E4','G4','Bb4'], mel:[[1.5,'C5'],[3,'E5']] },
+  { bass:'F2',  ch:['F3','A3','C4','E4'],  mel:[[0,'F5'],[2,'E5'],[3,'D5']] },
+  { bass:'Bb2', ch:['Bb3','D4','F4','A4'], mel:[[1,'D5'],[2.5,'C5']] }
+];
+const ARP = [0, 1, 2, 3, 2, 1, 2, 3];
+
+function reverb() {
+  const len = ctx.sampleRate * 2.6, buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const d = buf.getChannelData(c);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6);
+  }
+  const cv = ctx.createConvolver(); cv.buffer = buf; return cv;
+}
+function bell(t, f, dur, vol) {
+  const o = ctx.createOscillator(), o2 = ctx.createOscillator();
+  const g = ctx.createGain(), g2 = ctx.createGain(), lp = ctx.createBiquadFilter();
+  o.type = 'sine'; o.frequency.value = f;
+  o2.type = 'triangle'; o2.frequency.value = f * 2.004; g2.gain.value = .13;
+  lp.type = 'lowpass'; lp.frequency.value = 2400;
+  o.connect(g); o2.connect(g2); g2.connect(g); g.connect(lp); lp.connect(dry); lp.connect(wet);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(vol, t + .014);
+  g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+  o.start(t); o2.start(t); o.stop(t + dur + .05); o2.stop(t + dur + .05);
+}
+function pad(t, f, dur, vol) {
+  const o = ctx.createOscillator(), g = ctx.createGain(), lp = ctx.createBiquadFilter();
+  o.type = 'triangle'; o.frequency.value = f;
+  lp.type = 'lowpass'; lp.frequency.value = 620;
+  o.connect(g); g.connect(lp); lp.connect(dry); lp.connect(wet);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(vol, t + .5);
+  g.gain.setValueAtTime(vol, t + dur - .5);
+  g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+  o.start(t); o.stop(t + dur + .05);
+}
+function playBar(i, t) {
+  const b = PROG[i];
+  pad(t, hz(b.bass), BAR, .05);
+  pad(t, hz(b.bass) * 3, BAR, .022);
+  ARP.forEach((k, j) => {
+    const soft = j % 2 ? .052 : .075;
+    bell(t + j * BEAT / 2, hz(b.ch[k]), 1.9, soft);
+  });
+  b.mel.forEach(([beat, n]) => bell(t + beat * BEAT, hz(n), 2.6, .085));
+}
+function tick() {
+  while (nextT < ctx.currentTime + .7) {
+    playBar(bar % PROG.length, nextT);
+    nextT += BAR; bar++;
+  }
+}
+const muteBtn = document.getElementById('mute');
+function startMusic() {
+  muteBtn.classList.add('on');
+  if (playing) return;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    master = ctx.createGain(); master.gain.value = 0; master.connect(ctx.destination);
+    dry = ctx.createGain(); dry.gain.value = .8; dry.connect(master);
+    wet = ctx.createGain(); wet.gain.value = .55;
+    const rv = reverb(); wet.connect(rv); rv.connect(master);
+    master.gain.linearRampToValueAtTime(.5, ctx.currentTime + 4);
+    nextT = ctx.currentTime + .35; bar = 0;
+    tick(); timer = setInterval(tick, 140);
+    playing = true;
+  } catch (e) { muteBtn.classList.remove('on'); }
+}
+muteBtn.addEventListener('click', () => {
+  if (!ctx) return;
+  const off = muteBtn.classList.toggle('off');
+  muteBtn.setAttribute('aria-label', off ? '음악 켜기' : '음악 끄기');
+  master.gain.cancelScheduledValues(ctx.currentTime);
+  master.gain.setValueAtTime(master.gain.value, ctx.currentTime);
+  master.gain.linearRampToValueAtTime(off ? 0 : .5, ctx.currentTime + (off ? .5 : 1.6));
+});
+document.addEventListener('visibilitychange', () => {
+  if (!ctx) return;
+  if (document.hidden) ctx.suspend(); else if (!muteBtn.classList.contains('off')) ctx.resume();
 });
 </script>
 </body>
